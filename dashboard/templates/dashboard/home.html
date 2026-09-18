@@ -5,10 +5,155 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>OpsBoard</title>
 </head>
+
+
 <body>
-    <main>
+
+    <header>
         <h1>OpsBoard</h1>
-        <p>Internal transaction metrics, without the noise.</p>
+
+        <nav>
+            <a href="{% url 'dashboard:home' %}">Dashboard</a>
+            <a href="{% url 'dashboard:transaction_list' %}">
+                Transactions
+            </a>
+        </nav>
+    </header>
+    <main>
+        <h2>Transaction summary</h2>
+
+        <section aria-label="Transaction metrics">
+            <article>
+                <h3>Total transactions</h3>
+                <p>{{ summary.total_transactions }}</p>
+            </article>
+
+            <article>
+                <h3>Completed transactions</h3>
+                <p>{{ summary.completed_transactions }}</p>
+            </article>
+
+            <article>
+                <h3>Completed volume</h3>
+                <p>{{ summary.completed_volume|floatformat:8 }}</p>
+            </article>
+        </section>
+        <section aria-labelledby="daily-volume-heading">
+    <h2 id="daily-volume-heading">
+        Daily completed volume
+    </h2>
+
+    <label for="chart-currency">Currency</label>
+    <select id="chart-currency">
+        {% for value, label in currency_choices %}
+            <option value="{{ value }}">
+                {{ label }}
+            </option>
+        {% endfor %}
+    </select>
+
+    <p id="chart-status">Loading chart data...</p>
+
+    <canvas
+        id="daily-volume-chart"
+        aria-label="Daily completed transaction volume"
+    ></canvas>
+</section>
     </main>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script>
+    const chartEndpoint =
+        "{% url 'dashboard:daily_volume_chart' %}";
+
+    const currencySelect =
+        document.getElementById("chart-currency");
+
+    const chartStatus =
+        document.getElementById("chart-status");
+
+    const chartCanvas =
+        document.getElementById("daily-volume-chart");
+
+    const colors = {
+        BTC: "#f7931a",
+        ETH: "#627eea",
+        USDT: "#26a17b",
+        USD: "#2e7d32",
+    };
+
+    let chart;
+
+    function findDataset(payload, currency) {
+        return payload.datasets.find(
+            dataset => dataset.label === currency
+        );
+    }
+
+    function buildChartDataset(dataset) {
+        return {
+            ...dataset,
+            borderColor: colors[dataset.label],
+            backgroundColor: colors[dataset.label],
+            tension: 0.2,
+        };
+    }
+
+    fetch(chartEndpoint)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(
+                    `Chart request failed: ${response.status}`
+                );
+            }
+
+            return response.json();
+        })
+        .then(payload => {
+            const selectedDataset = findDataset(
+                payload,
+                currencySelect.value,
+            );
+
+            chart = new Chart(chartCanvas, {
+                type: "line",
+                data: {
+                    labels: payload.labels,
+                    datasets: [
+                        buildChartDataset(selectedDataset),
+                    ],
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                        },
+                    },
+                },
+            });
+
+            chartStatus.textContent = "";
+
+            currencySelect.addEventListener(
+                "change",
+                () => {
+                    const nextDataset = findDataset(
+                        payload,
+                        currencySelect.value,
+                    );
+
+                    chart.data.datasets = [
+                        buildChartDataset(nextDataset),
+                    ];
+                    chart.update();
+                },
+            );
+        })
+        .catch(error => {
+            chartStatus.textContent =
+                "Chart data could not be loaded.";
+            console.error(error);
+        });
+</script>
 </body>
 </html>

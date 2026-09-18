@@ -10,4 +10,9 @@ urlpatterns = [
           views.TransactionListView.as_view(),
           name="transaction_list"
         ),
+    path(
+        "api/charts/daily-volume/",
+        views.daily_volume_chart,
+        name="daily_volume_chart"
+    )
 ]

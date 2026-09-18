@@ -9,18 +9,93 @@ from django.db.models import Sum
 from django.test import RequestFactory,TestCase
 from django.urls import reverse
 from .models import DailyMetric, Transaction
+from django.utils import timezone
 
 
 from .views import TransactionListView
 
 
 class HomeViewTests(TestCase):
-    def test_home_page_renders(self) -> None:
-        response = self.client.get(reverse("dashboard:home"))
+    @classmethod
+    def setUpTestData(cls)->None:
+        cls.user = get_user_model().objects.create_user(
+            username="dashboard-viewer",
+            password="test-password",
+        )
 
+        Transaction.objects.create(
+            user=cls.user,
+            amount=Decimal("10.00000000"),
+            currency=Transaction.Currency.USD,
+            status=Transaction.Status.COMPLETED,
+        )
+        Transaction.objects.create(
+            user=cls.user,
+            amount=Decimal("5.00000000"),
+            currency=Transaction.Currency.USD,
+            status=Transaction.Status.FAILED,
+        )
+        DailyMetric.objects.create(
+            date=timezone.localdate(),
+            currency=Transaction.Currency.USD,
+            transaction_count=1,
+            total_volume=Decimal("10.00000000"),
+        )
+    def test_anonymous_user_is_redirected_to_login(self) -> None:
+            response = self.client.get(
+            reverse("dashboard:home")
+        )
+            self.assertEqual(response.status_code,302)
+
+    def test_home_page_renders_summary(self)->None:
+        self.client.force_login(self.user)
+        response=self.client.get(
+            reverse("dashboard:home")
+        )
+        self.assertEqual(response.status_code,200)
+        self.assertTemplateUsed(
+            response,
+            "dashboard/home.html"
+        )
+        self.assertEqual(
+            response.context["summary"]["total_transactions"],
+            2
+        )
+        self.assertEqual(
+            response.context["summary"]["completed_transactions"],
+            1
+        )
+        self.assertEqual(
+            response.context["summary"]["completed_volume"],
+            Decimal("10.00000000"),
+        )
+
+    def test_daily_volume_endpoint_returns_aligned_datasets(self) -> None:
+        self.client.force_login(self.user)
+        response = self.client.get(
+        reverse("dashboard:daily_volume_chart")
+        )
+        payload = response.json()
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "OpsBoard")
-        self.assertTemplateUsed(response, "dashboard/home.html")
+        self.assertEqual(
+        payload["labels"],
+        [timezone.localdate().isoformat()],
+        )
+        self.assertEqual(len(payload["datasets"]), 4)
+        datasets_by_currency = {
+            dataset["label"]: dataset["data"]
+            for dataset in payload["datasets"]
+            }
+        self.assertEqual(
+                        datasets_by_currency[Transaction.Currency.USD],
+             [10.0],
+            )
+        self.assertEqual(
+            datasets_by_currency[Transaction.Currency.BTC],
+            [0],
+            )
+
+
 
 class AdminPermissionTests(TestCase):
     @classmethod

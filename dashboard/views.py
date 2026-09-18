@@ -1,21 +1,87 @@
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import ListView
 from django.utils import timezone
 from django.utils.dateparse import parse_date
+from django.contrib.auth.decorators import login_required
+from django.db.models import Count, Q, Sum
 
-from datetime import datetime, time, timedelta
-from .models import Transaction
-
+from datetime import  datetime, time, timedelta
+from .models import DailyMetric, Transaction
+from decimal import Decimal
 from uuid import UUID
 
-from django.db.models import Q
 
 
+@login_required
 def home(request: HttpRequest) -> HttpResponse:
-    """Render the initial OpsBoard landing page."""
-    return render(request, "dashboard/home.html")
+    summary=Transaction.objects.aggregate(
+        total_transactions=Count("id"),
+        completed_transactions=Count(
+            "id",
+            filter=Q(status=Transaction.Status.COMPLETED),
+        ),
+        completed_volume=Sum(
+            "amount",
+            filter=Q(status=Transaction.Status.COMPLETED),
+        ),
+    )
+    summary["completed_volume"]=(
+        summary["completed_volume"]
+        or Decimal("0")
+    )
+
+    return render(
+        request,
+        "dashboard/home.html",
+        {
+            "summary":summary,
+            "currency_choices":Transaction.Currency.choices,
+         }
+    )
+
+@login_required
+def daily_volume_chart(request:HttpRequest)->JsonResponse:
+    start_date=timezone.localdate() - timedelta(days=29)
+    metric_rows=list(
+        DailyMetric.objects
+        .filter(date__gte=start_date)
+        .values("date","currency","total_volume")
+        .order_by("date","currency")
+    )
+    dates=sorted({
+        row["date"]
+        for row in metric_rows
+    })
+    volume_by_currency={
+        currency:{}
+        for currency in Transaction.Currency.values
+    }
+    for row in metric_rows:
+         volume_by_currency[row["currency"]][row["date"]] = float(
+            row["total_volume"]
+         )
+
+    datasets=[
+        {
+            "label":currency,
+            "data":[
+                volume_by_currency[currency].get(date,0)
+                for date in dates
+            ],
+        }
+        for currency in Transaction.Currency.values
+    ]
+
+    return JsonResponse({
+        "labels":[
+            date.isoformat()
+            for date in dates
+        ],
+        "datasets":datasets,
+    })
+
 
 class TransactionListView(LoginRequiredMixin, ListView):
     model = Transaction
