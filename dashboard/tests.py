@@ -1,17 +1,17 @@
 from decimal import Decimal
 from io import StringIO
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.core.management import call_command
 from django.db.models import Sum
-from django.test import TestCase
+from django.test import RequestFactory,TestCase
 from django.urls import reverse
-
 from .models import DailyMetric, Transaction
 
 
-
+from .views import TransactionListView
 
 
 class HomeViewTests(TestCase):
@@ -32,10 +32,11 @@ class AdminPermissionTests(TestCase):
         )
         viewer_group.permissions.add(view_transaction)
 
+
         cls.viewer = get_user_model().objects.create_user(
-        username="viewer-test",
-        password="testpassword",
-        is_staff=True,
+            username="viewer-test",
+            password="testpassword",
+            is_staff=True,
         )
         cls.viewer.groups.add(viewer_group)
 
@@ -106,3 +107,120 @@ class SeedDataCommandTests(TestCase):
               metric_volume.quantize(Decimal("0.00000001")),
               completed_volume.quantize(Decimal("0.00000001")),
         )
+
+class TransactionListViewTests(TestCase):
+    @classmethod
+    def setUpTestData(cls)->None:
+        cls.user=get_user_model().objects.create_user(
+            username="list-viewer",
+            password="test-password"
+        )
+
+        Transaction.objects.bulk_create(
+            [
+                Transaction(
+                    user=cls.user,
+                    amount=Decimal("10.00000000"),
+                    currency=Transaction.Currency.USD,
+                    status=(
+                        Transaction.Status.COMPLETED
+                        if index<30
+                        else Transaction.Status.FAILED
+                    ),
+                )
+                for index in range(55)
+            ]
+        )
+
+    def test_anonymous_user_is_redirected_to_login(self)->None:
+        url=reverse("dashboard:transaction_list")
+        response=self.client.get(url)
+        expected_url=f"{settings.LOGIN_URL}?next={url}"
+
+        self.assertRedirects(
+            response,
+            expected_url,
+            fetch_redirect_response=False,
+        )
+
+    def test_transaction_are_paginated_by_fifty(self)->None:
+        self.client.force_login(self.user)
+        url=reverse("dashboard:transaction_list")
+
+        first_page_response = self.client.get(url)
+        second_page_response=self.client.get(
+            url,
+            {"page":2},
+        )
+        self.assertEqual(
+        len(first_page_response.context["transactions"]),
+        50,
+        )
+        self.assertEqual(
+        len(second_page_response.context["transactions"]),
+        5,
+        )
+        self.assertEqual(
+        second_page_response.context["page_obj"].number,
+        2,
+        )
+
+    def test_status_filter_returns_only_selected_status(self) -> None:
+     self.client.force_login(self.user)
+     url = reverse("dashboard:transaction_list")
+
+     response = self.client.get(
+        url,
+        {"status": Transaction.Status.FAILED},
+     )
+
+     transactions = response.context["transactions"]
+
+     self.assertEqual(len(transactions), 25)
+     self.assertTrue(
+        all(
+            transaction.status == Transaction.Status.FAILED
+            for transaction in transactions
+        )
+     )
+     self.assertEqual(
+        response.context["selected_status"],
+        Transaction.Status.FAILED,
+     )
+
+    def test_pagination_links_preserve_search_filter(self) -> None:
+        self.client.force_login(self.user)
+        url = reverse("dashboard:transaction_list")
+
+        response = self.client.get(
+         url,
+        {"search": "list-viewer"},
+        )
+
+        self.assertEqual(
+        response.context["query_string"],
+        "search=list-viewer",
+        )
+        self.assertContains(
+        response,
+        'href="?search=list-viewer&amp;page=2"',
+        )
+
+    def test_transaction_users_are_loaded_in_one_query(self) -> None:
+        request = RequestFactory().get(
+        reverse("dashboard:transaction_list")
+        )
+        request.user = self.user
+
+        view = TransactionListView()
+        view.setup(request)
+
+        with self.assertNumQueries(1):
+            transactions = list(
+            view.get_queryset()[:50]
+            )
+            usernames = [
+            transaction.user.username
+            for transaction in transactions
+            ]
+        self.assertEqual(len(usernames), 50)
