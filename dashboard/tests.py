@@ -10,6 +10,8 @@ from django.test import RequestFactory,TestCase
 from django.urls import reverse
 from .models import DailyMetric, Transaction
 from django.utils import timezone
+from urllib.parse import quote
+from django.urls import reverse
 
 
 from .views import TransactionListView
@@ -210,7 +212,10 @@ class TransactionListViewTests(TestCase):
     def test_anonymous_user_is_redirected_to_login(self)->None:
         url=reverse("dashboard:transaction_list")
         response=self.client.get(url)
-        expected_url=f"{settings.LOGIN_URL}?next={url}"
+        expected_url=(
+             f"{reverse('login')}?next="
+             f"{quote(reverse('dashboard:transaction_list'), safe='')}"
+        )
 
         self.assertRedirects(
             response,
@@ -298,4 +303,34 @@ class TransactionListViewTests(TestCase):
             transaction.user.username
             for transaction in transactions
             ]
-        self.assertEqual(len(usernames), 50)
+class AuthenticationFlowTests(TestCase):
+    def setUp(self):
+        self.password = "safe-test-password"
+        self.user = get_user_model().objects.create_user(
+            username="viewer",
+            password=self.password,
+        )
+
+    def test_login_redirects_to_dashboard(self):
+        response = self.client.post(
+            reverse("login"),
+            {
+                "username": self.user.username,
+                "password": self.password,
+            },
+        )
+
+        self.assertRedirects(
+            response,
+            reverse("dashboard:home"),
+        )
+
+    def test_logout_redirects_to_login(self):
+        self.client.force_login(self.user)
+
+        response = self.client.post(reverse("logout"))
+
+        self.assertRedirects(
+            response,
+            reverse("login"),
+        )

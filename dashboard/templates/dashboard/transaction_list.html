@@ -1,11 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Transactions | OpsBoard</title>
-</head>
-<body>
+{% extends "dashboard/base.html" %}
+{% block title %}Transactions | OpsBoard{% endblock %}
+{% block content %}
     <main>
         <h1>Transactions</h1>
         <form method="get">
@@ -106,5 +101,4 @@
     </nav>
 {% endif %}
     </main>
-</body>
-</html>
+{% endblock %}

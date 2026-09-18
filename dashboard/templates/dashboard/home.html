@@ -1,28 +1,10 @@
-<!doctype html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>OpsBoard</title>
-</head>
+{% extends "dashboard/base.html" %}
+{% block title %}Dashboard | OpsBoard{% endblock %}
 
-
-<body>
-
-    <header>
-        <h1>OpsBoard</h1>
-
-        <nav>
-            <a href="{% url 'dashboard:home' %}">Dashboard</a>
-            <a href="{% url 'dashboard:transaction_list' %}">
-                Transactions
-            </a>
-        </nav>
-    </header>
-    <main>
-        <h2>Transaction summary</h2>
-
-        <section aria-label="Transaction metrics">
+{% block content %}
+<main>
+    <!-- Existing summary cards and chart section go here -->
+             <section aria-label="Transaction metrics">
             <article>
                 <h3>Total transactions</h3>
                 <p>{{ summary.total_transactions }}</p>
@@ -59,9 +41,13 @@
         aria-label="Daily completed transaction volume"
     ></canvas>
 </section>
-    </main>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+{% endblock %}
+
+</main>
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
 <script>
+          // Keep all your existing chart JavaScript here.
     const chartEndpoint =
         "{% url 'dashboard:daily_volume_chart' %}";
 
@@ -131,9 +117,7 @@
                     },
                 },
             });
-
             chartStatus.textContent = "";
-
             currencySelect.addEventListener(
                 "change",
                 () => {
@@ -155,5 +139,4 @@
             console.error(error);
         });
 </script>
-</body>
-</html>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="{% static 'dashboard/styles.css' %}">
+    <title>
+        {% block title %}OpsBoard{% endblock %}
+    </title>
+</head>
+
+<body>
+    <header>
+        <h1>OpsBoard</h1>
+
+        <nav>
+            <a href="{% url 'dashboard:home' %}">
+                Dashboard
+            </a>
+
+            <a href="{% url 'dashboard:transaction_list' %}">
+                Transactions
+            </a>
+
+            <span>Signed in as {{ request.user.username }}</span>
+
+            <form
+                method="post"
+                action="{% url 'logout' %}"
+                style="display: inline"
+            >
+                {% csrf_token %}
+                <button type="submit">Log out</button>
+            </form>
+        </nav>
+    </header>
+
+    <main>
+        {% block content %}
+        {% endblock %}
+    </main>
+
+    {% block scripts %}
+    {% endblock %}
+</body>
+</html>

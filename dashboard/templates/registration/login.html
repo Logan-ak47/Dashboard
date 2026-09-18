@@ -1,0 +1,38 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="{% static 'dashboard/styles.css' %}">
+    <title>Login | OpsBoard</title>
+</head>
+<body>
+    <main>
+        <h1>Sign in to OpsBoard</h1>
+
+        {% if form.errors %}
+            <p>
+                The username or password was incorrect.
+            </p>
+        {% endif %}
+
+        <form method="post">
+            {% csrf_token %}
+
+            {{ form.as_p }}
+
+            {% if next %}
+                <input
+                    type="hidden"
+                    name="next"
+                    value="{{ next }}"
+                >
+            {% endif %}
+
+            <button type="submit">Sign in</button>
+        </form>
+    </main>
+</body>
+</html>
