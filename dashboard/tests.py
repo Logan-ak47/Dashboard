@@ -1,5 +1,8 @@
+import os
 from decimal import Decimal
 from io import StringIO
+from unittest.mock import patch
+from urllib.parse import quote
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -10,8 +13,7 @@ from django.test import RequestFactory,TestCase
 from django.urls import reverse
 from .models import DailyMetric, Transaction
 from django.utils import timezone
-from urllib.parse import quote
-from django.urls import reverse
+from django.core.management.base import CommandError
 
 
 from .views import TransactionListView
@@ -333,4 +335,79 @@ class AuthenticationFlowTests(TestCase):
         self.assertRedirects(
             response,
             reverse("login"),
+        )
+
+class BootstrapUsersCommandTests(TestCase):
+    def test_password_environment_variables_are_required(self):
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesMessage(
+                CommandError,
+                "OPSBOARD_ADMIN_PASSWORD must be set.",
+            ):
+                call_command("bootstrap_users")
+
+    def test_command_is_idempotent_and_viewer_is_read_only(self):
+        environment = {
+            "OPSBOARD_ADMIN_PASSWORD": "test-admin-password",
+            "OPSBOARD_VIEWER_PASSWORD": "test-viewer-password",
+        }
+
+        with patch.dict(
+            os.environ,
+            environment,
+            clear=False,
+        ):
+            call_command("bootstrap_users")
+            call_command("bootstrap_users")
+
+        User = get_user_model()
+
+        self.assertEqual(
+            User.objects.filter(
+                username="opsboard-admin"
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            User.objects.filter(
+                username="opsboard-viewer"
+            ).count(),
+            1,
+        )
+
+        admin_user = User.objects.get(
+            username="opsboard-admin"
+        )
+        viewer_user = User.objects.get(
+            username="opsboard-viewer"
+        )
+
+        self.assertTrue(admin_user.is_superuser)
+        self.assertTrue(
+            admin_user.check_password(
+                "test-admin-password"
+            )
+        )
+
+        self.assertTrue(viewer_user.is_staff)
+        self.assertFalse(viewer_user.is_superuser)
+        self.assertTrue(
+            viewer_user.check_password(
+                "test-viewer-password"
+            )
+        )
+        self.assertTrue(
+            viewer_user.has_perm(
+                "dashboard.view_transaction"
+            )
+        )
+        self.assertTrue(
+            viewer_user.has_perm(
+                "dashboard.view_dailymetric"
+            )
+        )
+        self.assertFalse(
+            viewer_user.has_perm(
+                "dashboard.add_transaction"
+            )
         )
