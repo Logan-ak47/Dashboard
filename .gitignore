@@ -5,8 +5,9 @@ __pycache__/
 
 # Django local state
 db.sqlite3
-staticfiles/
 
+
+staticfiles/
 # Environment and editor files
 .env
 .idea/

@@ -1,0 +1,39 @@
+databases:
+  - name: opsboard-db
+    plan: free
+    databaseName: opsboard
+    user: opsboard
+
+services:
+  - type: web
+    name: opsboard-logan-ak47
+    runtime: python
+    plan: free
+
+    buildCommand: >-
+      uv sync --frozen
+      && uv run python manage.py collectstatic --noinput
+      && uv run python manage.py migrate
+
+    startCommand: >-
+      uv run gunicorn config.wsgi:application
+
+    healthCheckPath: /accounts/login/
+
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: opsboard-db
+          property: connectionString
+
+      - key: DJANGO_SECRET_KEY
+        generateValue: true
+
+      - key: DJANGO_DEBUG
+        value: "False"
+
+      - key: PYTHON_VERSION
+        value: "3.13.12"
+
+      - key: WEB_CONCURRENCY
+        value: "2"
