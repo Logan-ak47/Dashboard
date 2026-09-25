@@ -178,17 +178,6 @@ These constraints are appropriate for a portfolio demonstration, not a real prod
 - Used a shared base template and namespaced static files instead of duplicating page structure.
 - Kept React, Docker, Celery, websockets, DRF viewsets, custom users, and microservices out of the deliberately small v1 scope.
 
-
-
-
-
-
-
-
-
-
 ## License
 
 This project is provided as a portfolio project.
-
-
