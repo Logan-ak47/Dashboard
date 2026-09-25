@@ -2,7 +2,6 @@
 <!doctype html>
 <html lang="en">
 <head>
-
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="{% static 'dashboard/styles.css' %}">
@@ -11,6 +10,19 @@
 <body>
     <main>
         <h1>Sign in to OpsBoard</h1>
+
+        <p>
+            Explore the deployed dashboard with the read-only demo
+            account. All transaction data is fictional.
+        </p>
+
+        <dl>
+            <dt>Username</dt>
+            <dd><code>opsboard-viewer</code></dd>
+
+            <dt>Password</dt>
+            <dd><code>OpsBoard-Viewer-2026!</code></dd>
+        </dl>
 
         {% if form.errors %}
             <p>
@@ -33,6 +45,21 @@
 
             <button type="submit">Sign in</button>
         </form>
+
+        <p>
+            After signing in, use the <strong>Log out</strong> button in
+            the page header to end the session.
+        </p>
+
+        <p>
+            <a
+                href="https://github.com/Logan-ak47/Dashboard"
+                target="_blank"
+                rel="noopener noreferrer"
+            >
+                View source and setup notes on GitHub
+            </a>
+        </p>
     </main>
 </body>
 </html>
