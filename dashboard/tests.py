@@ -14,9 +14,11 @@ from django.urls import reverse
 from .models import DailyMetric, Transaction
 from django.utils import timezone
 from django.core.management.base import CommandError
-
+from rest_framework.test import APITestCase
 
 from .views import TransactionListView
+
+from rest_framework import status
 
 
 class HomeViewTests(TestCase):
@@ -410,4 +412,100 @@ class BootstrapUsersCommandTests(TestCase):
             viewer_user.has_perm(
                 "dashboard.add_transaction"
             )
+        )
+
+
+class JWTAuthenticationTests(APITestCase):
+    def setUp(self):
+        self.password = "test-viewer-password"
+        self.user = get_user_model().objects.create_user(
+            username="jwt-viewer",
+            password=self.password,
+        )
+
+    def obtain_token_pair(self):
+        return self.client.post(
+            reverse("token_obtain_pair"),
+            {
+                "username": self.user.username,
+                "password": self.password,
+            },
+            format="json",
+        )
+
+    def test_valid_credentials_return_token_pair(self):
+        response = self.obtain_token_pair()
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
+
+    def test_logout_requires_authentication(self):
+        pair_response = self.obtain_token_pair()
+
+        response = self.client.post(
+            reverse("token_logout"),
+            {"refresh": pair_response.data["refresh"]},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_logout_blacklists_refresh_token(self):
+        pair_response = self.obtain_token_pair()
+        access_token = pair_response.data["access"]
+        refresh_token = pair_response.data["refresh"]
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {access_token}",
+        )
+
+        logout_response = self.client.post(
+            reverse("token_logout"),
+            {"refresh": refresh_token},
+            format="json",
+        )
+
+        self.assertEqual(
+            logout_response.status_code,
+            status.HTTP_204_NO_CONTENT,
+        )
+
+        refresh_response = self.client.post(
+            reverse("token_refresh"),
+            {"refresh": refresh_token},
+            format="json",
+        )
+
+        self.assertEqual(
+            refresh_response.status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_logout_requires_refresh_token(self):
+        pair_response = self.obtain_token_pair()
+        access_token = pair_response.data["access"]
+
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {access_token}",
+        )
+
+        response = self.client.post(
+            reverse("token_logout"),
+            {},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+        self.assertEqual(
+            response.data["detail"],
+            "Refresh token is required.",
         )

@@ -18,17 +18,43 @@ from django.contrib import admin
 from django.urls import include, path
 from django.contrib.auth import views as auth_views
 
+from rest_framework_simplejwt.views import (
+    TokenObtainPairView,
+    TokenRefreshView,
+)
+
+from django.contrib.auth.views import (
+    LoginView,
+    LogoutView as SessionLogoutView,
+)
+
+
+
+from dashboard.api_views import JWTLogoutView
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     path(
         "accounts/login/",
-        auth_views.LoginView.as_view(),
-        name="login",
+         auth_views.LoginView.as_view(),
+         name="login",
     ),
     path(
         "accounts/logout/",
-        auth_views.LogoutView.as_view(),
-        name="logout",
+        SessionLogoutView.as_view(),
+         name="logout",
     ),
-    path('', include('dashboard.urls')),
+    path('',
+          include('dashboard.urls')),
+    path('api/auth/token/',
+          TokenObtainPairView.as_view(),
+          name='token_obtain_pair'),
+    path('api/auth/token/refresh/',
+          TokenRefreshView.as_view(),
+          name='token_refresh'),
+    path(
+    "api/auth/logout/",
+    JWTLogoutView.as_view(),
+    name="token_logout",
+),
 ]
