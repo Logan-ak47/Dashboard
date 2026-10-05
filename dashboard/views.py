@@ -7,6 +7,11 @@ from django.utils.dateparse import parse_date
 from django.contrib.auth.decorators import login_required
 from django.db.models import Count, Q, Sum
 
+
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
 from datetime import  datetime, time, timedelta
 from .models import DailyMetric, Transaction
 from decimal import Decimal
@@ -31,7 +36,6 @@ def home(request: HttpRequest) -> HttpResponse:
         summary["completed_volume"]
         or Decimal("0")
     )
-
     return render(
         request,
         "dashboard/home.html",
@@ -41,7 +45,8 @@ def home(request: HttpRequest) -> HttpResponse:
          }
     )
 
-@login_required
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
 def daily_volume_chart(request:HttpRequest)->JsonResponse:
     start_date=timezone.localdate() - timedelta(days=29)
     metric_rows=list(
@@ -74,13 +79,14 @@ def daily_volume_chart(request:HttpRequest)->JsonResponse:
         for currency in Transaction.Currency.values
     ]
 
-    return JsonResponse({
-        "labels":[
+    payload={
+            "labels":[
             date.isoformat()
             for date in dates
-        ],
-        "datasets":datasets,
-    })
+            ],
+            "datasets":datasets,
+    }
+    return Response(payload)
 
 
 class TransactionListView(LoginRequiredMixin, ListView):

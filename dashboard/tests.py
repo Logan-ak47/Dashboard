@@ -19,6 +19,7 @@ from rest_framework.test import APITestCase
 from .views import TransactionListView
 
 from rest_framework import status
+from rest_framework_simplejwt.tokens import RefreshToken
 
 
 class HomeViewTests(TestCase):
@@ -100,7 +101,35 @@ class HomeViewTests(TestCase):
             datasets_by_currency[Transaction.Currency.BTC],
             [0],
             )
+    def test_daily_volume_endpoint_rejects_anonymous_user(
+            self,
+        ) -> None:
+            response = self.client.get(
+                reverse("dashboard:daily_volume_chart")
+            )
 
+            self.assertEqual(
+                response.status_code,
+                status.HTTP_401_UNAUTHORIZED,
+            )
+    def test_daily_volume_endpoint_accepts_jwt(
+            self,
+        ) -> None:
+        access_token = RefreshToken.for_user(
+            self.user
+        ).access_token
+
+        response = self.client.get(
+            reverse("dashboard:daily_volume_chart"),
+            HTTP_AUTHORIZATION=f"Bearer {access_token}",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertIn("labels", response.json())
+        self.assertIn("datasets", response.json())
 
 
 class AdminPermissionTests(TestCase):
@@ -508,4 +537,110 @@ class JWTAuthenticationTests(APITestCase):
         self.assertEqual(
             response.data["detail"],
             "Refresh token is required.",
+        )
+class TransactionDetailAPITests(APITestCase):
+    @classmethod
+    def setUpTestData(cls):
+        user_model = get_user_model()
+
+        cls.viewer = user_model.objects.create_user(
+            username="api-viewer",
+            password="viewer-password",
+        )
+        cls.viewer.user_permissions.add(
+            Permission.objects.get(
+                codename="view_transaction",
+                content_type__app_label="dashboard",
+            )
+        )
+
+        cls.admin = user_model.objects.create_superuser(
+            username="api-admin",
+            email="admin@example.com",
+            password="admin-password",
+        )
+
+        cls.transaction = Transaction.objects.create(
+            user=cls.viewer,
+            amount=Decimal("25.00000000"),
+            currency=Transaction.Currency.USD,
+            status=Transaction.Status.PENDING,
+        )
+
+        cls.url = reverse(
+            "dashboard:transaction_api_detail",
+            kwargs={
+                "reference": cls.transaction.reference,
+            },
+        )
+
+    def authenticate_as(self, user):
+        access_token = RefreshToken.for_user(
+            user
+        ).access_token
+
+        self.client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {access_token}",
+        )
+
+    def test_anonymous_user_cannot_read_transaction(self):
+        response = self.client.get(self.url)
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_viewer_can_read_transaction(self):
+        self.authenticate_as(self.viewer)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            response.data["reference"],
+            str(self.transaction.reference),
+        )
+
+    def test_viewer_cannot_change_transaction(self):
+        self.authenticate_as(self.viewer)
+
+        response = self.client.patch(
+            self.url,
+            {"status": Transaction.Status.COMPLETED},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+        self.transaction.refresh_from_db()
+        self.assertEqual(
+            self.transaction.status,
+            Transaction.Status.PENDING,
+        )
+
+    def test_admin_can_change_transaction_status(self):
+        self.authenticate_as(self.admin)
+
+        response = self.client.patch(
+            self.url,
+            {"status": Transaction.Status.COMPLETED},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        self.transaction.refresh_from_db()
+        self.assertEqual(
+            self.transaction.status,
+            Transaction.Status.COMPLETED,
         )

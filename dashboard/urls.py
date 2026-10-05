@@ -1,6 +1,7 @@
 from django.urls import path
 
 from . import views
+from .api_views import TransactionDetailAPIView
 
 app_name = "dashboard"
 
@@ -14,5 +15,10 @@ urlpatterns = [
         "api/charts/daily-volume/",
         views.daily_volume_chart,
         name="daily_volume_chart"
-    )
+    ),
+    path(
+        "api/transactions/<uuid:reference>/",
+        TransactionDetailAPIView.as_view(),
+        name="transaction_api_detail",
+),
 ]
