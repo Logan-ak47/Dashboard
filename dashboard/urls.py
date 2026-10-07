@@ -1,7 +1,10 @@
 from django.urls import path
 
 from . import views
-from .api_views import TransactionDetailAPIView
+from .api_views import (
+    TransactionDetailAPIView,
+    TransactionListAPIView,
+)
 
 app_name = "dashboard"
 
@@ -20,5 +23,10 @@ urlpatterns = [
         "api/transactions/<uuid:reference>/",
         TransactionDetailAPIView.as_view(),
         name="transaction_api_detail",
-),
+    ),
+    path(
+    "api/transactions/",
+    TransactionListAPIView.as_view(),
+    name="transaction_api_list",
+    ),
 ]

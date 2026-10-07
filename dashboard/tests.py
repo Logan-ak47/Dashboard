@@ -644,3 +644,113 @@ class TransactionDetailAPITests(APITestCase):
             self.transaction.status,
             Transaction.Status.COMPLETED,
         )
+class TransactionListAPITests(APITestCase):
+    @classmethod
+    def setUpTestData(cls):
+        user_model = get_user_model()
+
+        cls.viewer = user_model.objects.create_user(
+            username="Ashutosh",
+            password="Python@123",
+        )
+        cls.viewer.user_permissions.add(
+            Permission.objects.get(
+                codename="view_transaction",
+                content_type__app_label="dashboard",
+            )
+        )
+
+        Transaction.objects.bulk_create(
+            [
+                Transaction(
+                    user=cls.viewer,
+                    amount=Decimal("10.00000000"),
+                    currency=Transaction.Currency.USD,
+                    status=Transaction.Status.COMPLETED,
+                )
+                for _ in range(125)
+            ]
+        )
+
+        Transaction.objects.bulk_create(
+            [
+                Transaction(
+                     user=cls.viewer,
+                     amount=Decimal("1.00000000"),
+                     currency=Transaction.Currency.BTC,
+                     status=Transaction.Status.COMPLETED,
+                 )
+                 for _ in range(3)
+            ]
+)
+
+        cls.url = reverse(
+            "dashboard:transaction_api_list"
+        )
+
+    def setUp(self):
+        self.client.force_authenticate(
+            user=self.viewer
+        )
+
+    def test_default_page_contains_25_transactions(self):
+        response = self.client.get(self.url)
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(response.data["count"], 128)
+        self.assertEqual(
+            len(response.data["results"]),
+            25,
+        )
+        self.assertIsNotNone(response.data["next"])
+        self.assertIsNone(response.data["previous"])
+
+    def test_requested_page_size_is_capped_at_100(self):
+        response = self.client.get(
+            self.url,
+            {"page_size": 200},
+        )
+
+        self.assertEqual(
+            len(response.data["results"]),
+            100,
+        )
+
+    def test_list_query_count_does_not_grow_per_user(self):
+        self.viewer.has_perm(
+            "dashboard.view_transaction"
+        )
+
+        with self.assertNumQueries(2):
+            response = self.client.get(
+                self.url,
+                {"page_size": 100},
+            )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_list_can_be_filtered_by_currency(self):
+        response = self.client.get(
+            self.url,
+            {"currency": Transaction.Currency.BTC},
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(response.data["count"], 3)
+
+        self.assertTrue(
+            all(
+                transaction["currency"]
+                == Transaction.Currency.BTC
+                for transaction in response.data["results"]
+            )
+        )

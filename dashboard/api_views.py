@@ -4,11 +4,16 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework.generics import RetrieveUpdateAPIView
+from rest_framework.generics import (
+    ListAPIView,
+    RetrieveUpdateAPIView,
+)
+from rest_framework.pagination import PageNumberPagination
 
 from .models import Transaction
 from .permissions import TransactionAPIPermission
 from .serializers import TransactionSerializer
+
 
 
 class JWTLogoutView(APIView):
@@ -48,3 +53,30 @@ class TransactionDetailAPIView(RetrieveUpdateAPIView):
         "head",
         "options",
     ]
+
+class TransactionPagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+class TransactionListAPIView(ListAPIView):
+    queryset = Transaction.objects.select_related(
+        "user"
+    )
+    serializer_class = TransactionSerializer
+    permission_classes = [
+        IsAuthenticated,
+        TransactionAPIPermission,
+    ]
+    pagination_class = TransactionPagination
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        currency = self.request.query_params.get(
+            "currency"
+        )
+        if currency:
+            queryset = queryset.filter(
+                currency=currency
+            )
+        return queryset

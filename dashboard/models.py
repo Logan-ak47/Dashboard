@@ -36,19 +36,24 @@ class Transaction(models.Model):
 
     def __str__(self) -> str:
         return f"{self.reference} - {self.amount} {self.currency}"
-    
+
     class Meta:
         ordering = ['-timestamp']
         indexes = [
             models.Index(fields=["status", "timestamp"],
                          name="status_timestamp_idx",
                         ),
+            models.Index(
+                fields=["currency", "-timestamp"],
+                name="currency_timestamp_idx",
+            ),
         ]
         constraints = [
             models.CheckConstraint(
                 condition=models.Q(amount__gt=0),
                 name="amount_positive_check"
             ),
+
         ]
 
 class DailyMetric(models.Model):
@@ -69,5 +74,5 @@ class DailyMetric(models.Model):
         ]
     def __str__(self) -> str:
         return f"{self.date} - {self.currency} - {self.transaction_count}"
-    
+
 
