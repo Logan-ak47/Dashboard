@@ -30,6 +30,19 @@ class JWTLogoutView(APIView):
 
         try:
             refresh_token = RefreshToken(refresh_value)
+            if(
+                str(refresh_token.get("user_id"))
+                != str(request.user.pk)
+            ):
+             return Response(
+                {
+                    "detail": (
+                        "You cannot revoke this "
+                        "refresh token."
+                    )
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
             refresh_token.blacklist()
         except TokenError:
             return Response(

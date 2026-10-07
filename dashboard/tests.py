@@ -3,6 +3,7 @@ from decimal import Decimal
 from io import StringIO
 from unittest.mock import patch
 from urllib.parse import quote
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -19,7 +20,10 @@ from rest_framework.test import APITestCase
 from .views import TransactionListView
 
 from rest_framework import status
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import (
+    AccessToken,
+    RefreshToken,
+)
 
 
 class HomeViewTests(TestCase):
@@ -451,6 +455,12 @@ class JWTAuthenticationTests(APITestCase):
             username="jwt-viewer",
             password=self.password,
         )
+        self.other_user = (
+            get_user_model().objects.create_user(
+            username="other-jwt-user",
+            password="other-password",
+            )
+        )
 
     def obtain_token_pair(self):
         return self.client.post(
@@ -461,6 +471,104 @@ class JWTAuthenticationTests(APITestCase):
             },
             format="json",
         )
+
+    def test_user_cannot_logout_another_users_token(self):
+        own_access_token = RefreshToken.for_user(
+            self.user
+        ).access_token
+        other_refresh_token = RefreshToken.for_user(
+            self.other_user
+        )
+        self.client.credentials(
+            HTTP_AUTHORIZATION=(
+                f"Bearer {own_access_token}"
+            ),
+        )
+        logout_response = self.client.post(
+            reverse("token_logout"),
+            {
+                "refresh": str(
+                    other_refresh_token
+                )
+            },
+            format="json",
+        )
+        self.assertEqual(
+            logout_response.status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+        refresh_response = self.client.post(
+            reverse("token_refresh"),
+            {
+                "refresh": str(
+                    other_refresh_token
+                )
+            },
+            format="json",
+        )
+        self.assertEqual(
+            refresh_response.status_code,
+            status.HTTP_200_OK,
+        )
+
+    def test_expired_access_token_is_rejected(self):
+        access_token = AccessToken.for_user(
+            self.user
+        )
+        access_token.set_exp(
+            lifetime=timedelta(seconds=-1)
+        )
+
+        self.client.credentials(
+            HTTP_AUTHORIZATION=(
+                f"Bearer {access_token}"
+            ),
+        )
+
+        response = self.client.get(
+            reverse("dashboard:daily_volume_chart")
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_refresh_token_cannot_authenticate_api_request(
+        self,
+        ):
+        refresh_token = RefreshToken.for_user(
+            self.user
+        )
+        self.client.credentials(
+            HTTP_AUTHORIZATION=(
+                f"Bearer {refresh_token}"
+            ),
+        )
+        response = self.client.get(
+            reverse("dashboard:daily_volume_chart")
+        )
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_invalid_credentials_do_not_return_tokens(self):
+        response = self.client.post(
+            reverse("token_obtain_pair"),
+            {
+                "username": self.user.username,
+                "password": "wrong-password",
+            },
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+        self.assertNotIn("access", response.data)
+        self.assertNotIn("refresh", response.data)
 
     def test_valid_credentials_return_token_pair(self):
         response = self.obtain_token_pair()
