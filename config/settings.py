@@ -193,6 +193,14 @@ if not DEBUG:
     SECURE_SSL_REDIRECT = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = int(
+        os.environ.get(
+        "DJANGO_SECURE_HSTS_SECONDS",
+        "3600",
+        )
+    )
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = False
+    SECURE_HSTS_PRELOAD = False
 
 
 REST_FRAMEWORK = {

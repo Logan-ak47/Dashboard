@@ -14,10 +14,14 @@ from django.test import RequestFactory,TestCase
 from django.urls import reverse
 from .models import DailyMetric, Transaction
 from django.utils import timezone
+from django.utils.html import escape
 from django.core.management.base import CommandError
-from rest_framework.test import APITestCase
-
 from .views import TransactionListView
+
+from rest_framework.test import (
+    APIClient,
+    APITestCase,
+)
 
 from rest_framework import status
 from rest_framework_simplejwt.tokens import (
@@ -340,6 +344,40 @@ class TransactionListViewTests(TestCase):
             transaction.user.username
             for transaction in transactions
             ]
+
+    def test_transaction_username_is_html_escaped(self):
+        malicious_username = (
+            '<script>alert("xss")</script>'
+        )
+
+        malicious_user = (
+            get_user_model().objects.create_user(
+                username=malicious_username,
+                password="test-password",
+            )
+        )
+
+        Transaction.objects.create(
+            user=malicious_user,
+            amount=Decimal("1.00000000"),
+            currency=Transaction.Currency.USD,
+            status=Transaction.Status.COMPLETED,
+        )
+
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("dashboard:transaction_list")
+        )
+
+        self.assertContains(
+            response,
+            escape(malicious_username),
+        )
+        self.assertNotContains(
+            response,
+            malicious_username,
+        )
 class AuthenticationFlowTests(TestCase):
     def setUp(self):
         self.password = "safe-test-password"
@@ -646,6 +684,53 @@ class JWTAuthenticationTests(APITestCase):
             response.data["detail"],
             "Refresh token is required.",
         )
+
+    def test_session_logout_request_requires_csrf(self):
+        csrf_client = APIClient(
+            enforce_csrf_checks=True
+        )
+        csrf_client.force_login(self.user)
+
+        refresh_token = RefreshToken.for_user(
+            self.user
+        )
+
+        response = csrf_client.post(
+            reverse("token_logout"),
+            {"refresh": str(refresh_token)},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+    def test_jwt_logout_does_not_require_csrf(self):
+        csrf_client = APIClient(
+            enforce_csrf_checks=True
+        )
+
+        refresh_token = RefreshToken.for_user(
+            self.user
+        )
+        access_token = refresh_token.access_token
+
+        csrf_client.credentials(
+            HTTP_AUTHORIZATION=(
+                f"Bearer {access_token}"
+            ),
+        )
+
+        response = csrf_client.post(
+            reverse("token_logout"),
+            {"refresh": str(refresh_token)},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_204_NO_CONTENT,
+        )
 class TransactionDetailAPITests(APITestCase):
     @classmethod
     def setUpTestData(cls):
@@ -862,3 +947,19 @@ class TransactionListAPITests(APITestCase):
                 for transaction in response.data["results"]
             )
         )
+    def test_currency_filter_does_not_execute_sql_input(
+        self,
+    ):
+        malicious_value = "USD' OR 1=1 --"
+
+        response = self.client.get(
+            self.url,
+            {"currency": malicious_value},
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.data["results"], [])
