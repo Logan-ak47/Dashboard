@@ -15,7 +15,6 @@ services:
       && uv run python manage.py collectstatic --noinput
       && uv run python manage.py migrate
       && uv run python manage.py bootstrap_users
-      && uv run python manage.py seed_data --count 5000 --clear
 
     startCommand: >-
       uv run gunicorn config.wsgi:application
@@ -45,3 +44,6 @@ services:
 
       - key: OPSBOARD_VIEWER_PASSWORD
         sync: false
+
+      - key: DJANGO_SECURE_HSTS_SECONDS
+        value: "3600"
