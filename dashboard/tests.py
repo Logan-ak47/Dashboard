@@ -39,11 +39,18 @@ from .token_service import (
     RotatingRefreshToken,
     hash_refresh_token,
     issue_token_pair,
+    RefreshTokenReuseDetected,
+    hash_refresh_token,
+    rotate_refresh_token,
 )
 from rest_framework_simplejwt.settings import api_settings
 from rest_framework_simplejwt.token_blacklist.models import (
     OutstandingToken,
 )
+
+
+from rest_framework_simplejwt.exceptions import TokenError
+
 
 
 
@@ -1206,3 +1213,117 @@ class TokenIssuanceServiceTests(TestCase):
             0,
         )
     
+class RefreshTokenRotationServiceTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="rotation-user",
+            password="test-password-2026",
+        )
+
+    def test_rotation_retires_old_token_and_creates_replacement(self):
+        first_pair = issue_token_pair(self.user)
+
+        family = RefreshTokenFamily.objects.get(
+            user=self.user
+        )
+        old_record = family.tokens.get()
+
+        second_pair = rotate_refresh_token(
+            first_pair["refresh"]
+        )
+
+        old_record.refresh_from_db()
+        family.refresh_from_db()
+
+        replacement = old_record.replaced_by
+
+        self.assertIsNotNone(old_record.used_at)
+        self.assertIsNotNone(replacement)
+        self.assertEqual(
+            replacement.family,
+            family,
+        )
+        self.assertEqual(
+            replacement.token_hash,
+            hash_refresh_token(
+                second_pair["refresh"]
+            ),
+        )
+        self.assertEqual(family.tokens.count(), 2)
+        self.assertIsNone(family.revoked_at)
+        self.assertIsNone(family.reuse_detected_at)
+        self.assertEqual(
+            OutstandingToken.objects.count(),
+            0,
+        )
+
+    def test_reusing_retired_token_revokes_entire_family(self):
+        first_pair = issue_token_pair(self.user)
+        second_pair = rotate_refresh_token(
+            first_pair["refresh"]
+        )
+
+        family = RefreshTokenFamily.objects.get(
+            user=self.user
+        )
+
+        with self.assertLogs(
+            "dashboard.token_service",
+            level="WARNING",
+        ) as captured_logs:
+            with self.assertRaises(
+                RefreshTokenReuseDetected
+            ):
+                rotate_refresh_token(
+                    first_pair["refresh"]
+                )
+
+        family.refresh_from_db()
+
+        self.assertIsNotNone(family.revoked_at)
+        self.assertIsNotNone(
+            family.reuse_detected_at
+        )
+        self.assertFalse(
+            family.tokens.filter(
+                revoked_at__isnull=True
+            ).exists()
+        )
+        self.assertNotIn(
+            first_pair["refresh"],
+            "\n".join(captured_logs.output),
+        )
+
+        with self.assertRaises(TokenError):
+            rotate_refresh_token(
+                second_pair["refresh"]
+            )
+
+    def test_inactive_user_rotation_revokes_family(self):
+        token_pair = issue_token_pair(self.user)
+        family = RefreshTokenFamily.objects.get(
+            user=self.user
+        )
+
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        with self.assertRaises(TokenError):
+            rotate_refresh_token(
+                token_pair["refresh"]
+            )
+
+        family.refresh_from_db()
+
+        self.assertIsNotNone(family.revoked_at)
+        self.assertFalse(
+            family.tokens.filter(
+                revoked_at__isnull=True
+            ).exists()
+        )
+
+    def test_random_token_string_is_rejected(self):
+        with self.assertRaises(TokenError):
+            rotate_refresh_token(
+                "not-a-signed-refresh-token"
+            )
