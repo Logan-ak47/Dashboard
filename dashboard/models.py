@@ -74,5 +74,44 @@ class DailyMetric(models.Model):
         ]
     def __str__(self) -> str:
         return f"{self.date} - {self.currency} - {self.transaction_count}"
+    
+class RefreshTokenFamily(models.Model):
+    id=models.UUIDField( primary_key=True,
+                         default=uuid.uuid4,
+                         editable=False,)
+    user=models.ForeignKey(settings.AUTH_USER_MODEL,
+                           on_delete=models.CASCADE,
+                           related_name='refresh_token_families')
+    created_at=models.DateTimeField(auto_now_add=True
+                                    )
+    revoked_at=models.DateTimeField( null=True,
+                                     blank=True,)
+    reuse_detected_at=models.DateTimeField( null=True,
+                                            blank=True,)
+    
+class HashedRefreshToken(models.Model):
+    family=models.ForeignKey(RefreshTokenFamily,
+                             on_delete=models.CASCADE,
+                             related_name="tokens")
+    jti=models.UUIDField(unique=True,
+                         editable=False,
+                         )
+    token_hash=models.CharField(max_length=64,
+                                unique=True,
+                                editable=False)
+    issued_at=models.DateTimeField(auto_now_add=True)
+    expires_at=models.DateTimeField()
+    used_at=models.DateTimeField(null=True,
+                                 blank=True)
+    revoked_at=models.DateTimeField(null=True,
+                                 blank=True)
+    replaced_by=models.OneToOneField("self",
+                                     on_delete=models.SET_NULL,
+                                     null=True,
+                                     blank=True,
+                                     related_name="replaces",
+                                     )
+    
+    
 
 

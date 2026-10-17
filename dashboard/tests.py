@@ -4,7 +4,8 @@ from io import StringIO
 from unittest.mock import patch
 from urllib.parse import quote
 from datetime import timedelta
-
+import hashlib
+import uuid
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
@@ -12,10 +13,14 @@ from django.core.management import call_command
 from django.db.models import Sum
 from django.test import RequestFactory,TestCase
 from django.urls import reverse
-from .models import DailyMetric, Transaction
+
+from dashboard.token_service import RotatingRefreshToken, issue_token_pair
+from .models import DailyMetric, Transaction,HashedRefreshToken, RefreshTokenFamily
 from django.utils import timezone
 from django.utils.html import escape
 from django.core.management.base import CommandError
+from django.db import models
+
 from .views import TransactionListView
 
 from rest_framework.test import (
@@ -28,6 +33,19 @@ from rest_framework_simplejwt.tokens import (
     AccessToken,
     RefreshToken,
 )
+
+from .models import HashedRefreshToken, RefreshTokenFamily
+from .token_service import (
+    RotatingRefreshToken,
+    hash_refresh_token,
+    issue_token_pair,
+)
+from rest_framework_simplejwt.settings import api_settings
+from rest_framework_simplejwt.token_blacklist.models import (
+    OutstandingToken,
+)
+
+
 
 
 class HomeViewTests(TestCase):
@@ -963,3 +981,228 @@ class TransactionListAPITests(APITestCase):
         )
         self.assertEqual(response.data["count"], 0)
         self.assertEqual(response.data["results"], [])
+        
+class MoneyFieldConfigurationTests(TestCase):
+    def test_money_fields_use_decimal_with_explicit_precision(self):
+        money_fields = [
+            (Transaction, "amount"),
+            (DailyMetric, "total_volume"),
+        ]
+
+        for model_class, field_name in money_fields:
+            with self.subTest(
+                model=model_class.__name__,
+                field=field_name,
+            ):
+                field = model_class._meta.get_field(field_name)
+
+                self.assertIsInstance(
+                    field,
+                    models.DecimalField,
+                )
+                self.assertEqual(field.max_digits, 20)
+                self.assertEqual(field.decimal_places, 8)
+                
+class RefreshTokenModelTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="token-model-user",
+            password="test-password-2026",
+        )
+        self.family = RefreshTokenFamily.objects.create(
+            user=self.user,
+        )
+
+    def create_token_record(self, token_value):
+        token_hash = hashlib.sha256(
+            token_value.encode("utf-8")
+        ).hexdigest()
+
+        return HashedRefreshToken.objects.create(
+            family=self.family,
+            jti=uuid.uuid4(),
+            token_hash=token_hash,
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
+
+    def test_new_family_starts_active(self):
+        self.assertEqual(self.family.user, self.user)
+        self.assertIsNotNone(self.family.id)
+        self.assertIsNone(self.family.revoked_at)
+        self.assertIsNone(self.family.reuse_detected_at)
+
+    def test_token_record_stores_hash_not_raw_value(self):
+        raw_token = "high-entropy-test-refresh-token"
+
+        token_record = self.create_token_record(raw_token)
+
+        expected_hash = hashlib.sha256(
+            raw_token.encode("utf-8")
+        ).hexdigest()
+
+        self.assertEqual(
+            token_record.token_hash,
+            expected_hash,
+        )
+        self.assertNotEqual(
+            token_record.token_hash,
+            raw_token,
+        )
+        self.assertEqual(len(token_record.token_hash), 64)
+        self.assertIsNone(token_record.used_at)
+        self.assertIsNone(token_record.revoked_at)
+
+    def test_model_has_no_raw_token_field(self):
+        field_names = {
+            field.name
+            for field in HashedRefreshToken._meta.fields
+        }
+
+        self.assertNotIn("token", field_names)
+        self.assertNotIn("raw_token", field_names)
+        self.assertNotIn("refresh_token", field_names)
+
+    def test_token_can_point_to_its_replacement(self):
+        old_token = self.create_token_record("old-refresh-token")
+        replacement = self.create_token_record(
+            "replacement-refresh-token"
+        )
+
+        old_token.replaced_by = replacement
+        old_token.save(update_fields=["replaced_by"])
+        old_token.refresh_from_db()
+
+        self.assertEqual(old_token.replaced_by, replacement)
+        self.assertEqual(replacement.replaces, old_token)
+
+    def test_deleting_family_deletes_its_token_records(self):
+        token_record = self.create_token_record(
+            "refresh-token-for-deletion-test"
+        )
+        token_id = token_record.id
+
+        self.family.delete()
+
+        self.assertFalse(
+            HashedRefreshToken.objects.filter(
+                id=token_id
+            ).exists()
+        )
+        
+class TokenIssuanceServiceTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="token-service-user",
+            password="test-password-2026",
+        )
+
+    def test_issuance_returns_valid_access_and_refresh_tokens(self):
+        token_pair = issue_token_pair(self.user)
+
+        access_token = AccessToken(token_pair["access"])
+        refresh_token = RotatingRefreshToken(
+            token_pair["refresh"]
+        )
+
+        user_id_claim = api_settings.USER_ID_CLAIM
+
+        self.assertEqual(
+            str(access_token[user_id_claim]),
+            str(self.user.pk),
+        )
+        self.assertEqual(
+            str(refresh_token[user_id_claim]),
+            str(self.user.pk),
+        )
+        self.assertEqual(
+            access_token["token_type"],
+            "access",
+        )
+        self.assertEqual(
+            refresh_token["token_type"],
+            "refresh",
+        )
+
+    def test_issuance_stores_only_refresh_token_hash(self):
+        token_pair = issue_token_pair(self.user)
+        raw_refresh_token = token_pair["refresh"]
+
+        family = RefreshTokenFamily.objects.get(
+            user=self.user
+        )
+        token_record = HashedRefreshToken.objects.get(
+            family=family
+        )
+        decoded_refresh = RotatingRefreshToken(
+            raw_refresh_token
+        )
+
+        self.assertEqual(
+            token_record.token_hash,
+            hash_refresh_token(raw_refresh_token),
+        )
+        self.assertNotEqual(
+            token_record.token_hash,
+            raw_refresh_token,
+        )
+        self.assertEqual(
+            token_record.jti,
+            uuid.UUID(decoded_refresh["jti"]),
+        )
+        self.assertEqual(
+            str(family.id),
+            decoded_refresh["family_id"],
+        )
+        self.assertEqual(
+            int(token_record.expires_at.timestamp()),
+            decoded_refresh["exp"],
+        )
+
+    def test_access_and_refresh_share_family_identifier(self):
+        token_pair = issue_token_pair(self.user)
+
+        access_token = AccessToken(token_pair["access"])
+        refresh_token = RotatingRefreshToken(
+            token_pair["refresh"]
+        )
+
+        self.assertEqual(
+            access_token["family_id"],
+            refresh_token["family_id"],
+        )
+
+    def test_custom_issuance_does_not_create_outstanding_token(self):
+        self.assertEqual(
+            OutstandingToken.objects.count(),
+            0,
+        )
+
+        issue_token_pair(self.user)
+
+        self.assertEqual(
+            OutstandingToken.objects.count(),
+            0,
+        )
+
+    def test_inactive_user_cannot_receive_tokens(self):
+        self.user.is_active = False
+        self.user.save(update_fields=["is_active"])
+
+        with self.assertRaises(ValueError):
+            issue_token_pair(self.user)
+
+        self.assertFalse(
+            RefreshTokenFamily.objects.filter(
+                user=self.user
+            ).exists()
+        )
+        self.assertFalse(
+            HashedRefreshToken.objects.filter(
+                family__user=self.user
+            ).exists()
+        )
+        self.assertEqual(
+            OutstandingToken.objects.count(),
+            0,
+        )
+    
