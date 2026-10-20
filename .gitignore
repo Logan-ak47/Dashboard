@@ -12,6 +12,7 @@ staticfiles/
 .env
 .idea/
 .vscode/
+.archify/
 
 # OS files
 .DS_Store

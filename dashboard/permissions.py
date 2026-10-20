@@ -20,3 +20,16 @@ class TransactionAPIPermission(BasePermission):
         return request.user.has_perm(
             "dashboard.change_transaction"
         )
+
+
+class CanExportTransactions(BasePermission):
+    """Allow only users trusted to change transaction data."""
+
+    message = (
+        "You do not have permission to export transactions."
+    )
+
+    def has_permission(self, request, view):
+        return request.user.has_perm(
+            "dashboard.change_transaction"
+        )

@@ -35,7 +35,8 @@ To sign out, use the **Log out** button in the application navigation. The login
 
 - Django session authentication for the server-rendered browser UI
 - JWT access and refresh authentication for API clients
-- Refresh-token rotation, blacklisting, ownership-checked logout, and short-lived access tokens
+- Hash-only refresh-token storage, atomic rotation, reuse detection, family revocation, ownership-checked logout, and short-lived access tokens
+- Password step-up authentication for an administrator-only transaction export preview
 - Administrator and view-only roles backed by Django model permissions
 - Transaction model with UUID references, exact decimal amounts, currencies, statuses, timestamps, and user ownership
 - Precomputed daily metric rollups for reporting reads
@@ -48,7 +49,7 @@ To sign out, use the **Log out** button in the application navigation. The login
 - Configured Django admin with columns, filters, search, date navigation, and efficient relationship loading
 - Composite indexes for common status/time and currency/time query paths
 - Idempotent production bootstrap for users, groups, and permissions
-- 38 automated tests covering views, APIs, queries, permissions, JWT boundaries, CSRF, SQL injection, XSS, seeding, and deployment bootstrap behavior
+- 65 automated tests covering views, APIs, queries, permissions, JWT boundaries, step-up authentication, CSRF, SQL injection, XSS, seeding, and deployment bootstrap behavior
 
 ## Architecture
 
@@ -76,6 +77,8 @@ Django ORM
 
 - `Transaction` is the source-of-truth event record.
 - `DailyMetric` is a denormalized rollup keyed by date and currency.
+- `RefreshTokenFamily` groups one login and rotation chain.
+- `HashedRefreshToken` stores token lifecycle metadata and a SHA-256 fingerprint, never the usable refresh JWT.
 - Django's built-in `User`, `Group`, and `Permission` models provide identity and authorization.
 
 Financial values use `DecimalField`, not floating point. Database constraints enforce positive transaction amounts and unique daily metrics. Relationship reads use `select_related("user")` to avoid N+1 queries.
@@ -84,7 +87,9 @@ Financial values use `DecimalField`, not floating point. Database constraints en
 
 The web UI keeps Django's built-in session login. Browsers automatically send the session cookie, and Django requires CSRF tokens for unsafe session-authenticated requests.
 
-API clients may obtain a short-lived access token and a longer-lived refresh token. Access tokens authenticate business API requests through the `Authorization: Bearer <token>` header. Refresh tokens are rotated and the previous token is blacklisted. JWT logout verifies that the refresh token belongs to the authenticated caller before revoking it.
+API clients may obtain a short-lived access token and a longer-lived refresh token. Access tokens authenticate business API requests through the `Authorization: Bearer <token>` header. The raw refresh token exists only on the client; OpsBoard stores its deterministic SHA-256 fingerprint, JTI, expiry, and lifecycle timestamps. Each successful refresh consumes the old token and creates a replacement in the same family. Reuse of a consumed token revokes the whole family because the server cannot know whether the legitimate client or an attacker received the replacement.
+
+JWT logout verifies that the submitted refresh token belongs to the authenticated caller before revoking its family. A legacy-data migration deletes complete refresh credentials previously stored by SimpleJWT's blacklist tables, and endpoint tests ensure the custom issuance path leaves `OutstandingToken` empty.
 
 Authentication establishes `request.user`; permissions determine what that identity may do. Safe transaction reads require `dashboard.view_transaction`, while PATCH requires `dashboard.change_transaction`. Authorization checks capabilities rather than hard-coded group names.
 
@@ -124,7 +129,7 @@ Content-Type: application/json
 }
 ```
 
-Refresh rotation returns a new access/refresh pair and blacklists the submitted refresh token.
+Refresh rotation returns a new access/refresh pair, marks the submitted token fingerprint as used, and links it to its replacement. Presenting that retired token again revokes every token in the family.
 
 ### JWT logout
 
@@ -139,6 +144,20 @@ Content-Type: application/json
 ```
 
 Successful logout returns `204 No Content`. It prevents future refreshes; an access token already issued remains valid until its short expiry.
+
+### Administrator export with step-up authentication
+
+```http
+POST /api/transactions/export/
+Authorization: Bearer <administrator-access-token>
+Content-Type: application/json
+
+{
+  "password": "<administrator-password>"
+}
+```
+
+This sensitive endpoint requires three independent checks: a valid access JWT, the `dashboard.change_transaction` permission, and password re-entry for the same user. A valid token alone is insufficient. The password is verified with Django's configured password hasher, is never stored or returned, and is discarded immediately after validation. The demonstration response is capped at 100 transactions and reports whether more records exist; a production full export would normally run as an audited background job.
 
 ### Chart data
 
@@ -202,7 +221,9 @@ Only users with `dashboard.change_transaction` may update status. Reference, own
 - Passwords use Django's salted, deliberately slow password hashing rather than reversible encryption.
 - Production fails closed when `DJANGO_SECRET_KEY` is missing.
 - JWT access tokens expire after five minutes; refresh tokens expire after one hour.
-- Refresh rotation and blacklist tables prevent used or logged-out refresh tokens from being replayed.
+- Only SHA-256 refresh-token fingerprints are stored by the active flow. A fast hash is appropriate because signed refresh tokens have high cryptographic entropy; human passwords still require salted, deliberately slow hashing.
+- Atomic refresh rotation consumes each refresh token once. Reuse revokes the entire family and emits a security event without logging the credential.
+- The sensitive export requires password step-up in addition to JWT authentication and admin permission, limiting what a stolen access token can authorize.
 - Session-authenticated unsafe requests require CSRF protection; explicit Bearer-token requests do not rely on automatically attached cookies.
 - ORM filters and parameterized SQL keep query structure separate from untrusted values.
 - Django template auto-escaping prevents stored values from becoming executable HTML by default.
@@ -255,7 +276,7 @@ Open <http://127.0.0.1:8000/>.
 $env:DJANGO_DEBUG = "true"
 uv run python manage.py check
 
-# Run all 38 tests
+# Run all 65 tests
 uv run python manage.py test
 
 # Verify model state has a committed migration

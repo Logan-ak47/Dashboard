@@ -260,3 +260,87 @@ def rotate_refresh_token(
         )
 
     return token_pair
+
+
+class RefreshTokenOwnershipError(Exception):
+    """The refresh token belongs to another authenticated user."""
+
+
+def revoke_refresh_token_family(
+    raw_refresh_token: str,
+    authenticated_user,
+) -> None:
+    """Revoke the family represented by a user's refresh token."""
+
+    decoded_token = RotatingRefreshToken(
+        raw_refresh_token
+    )
+
+    family_id = _get_uuid_claim(
+        decoded_token,
+        "family_id",
+    )
+    token_jti = _get_uuid_claim(
+        decoded_token,
+        "jti",
+    )
+    token_hash = hash_refresh_token(
+        raw_refresh_token
+    )
+
+    with transaction.atomic():
+        try:
+            family = (
+                RefreshTokenFamily.objects
+                .select_for_update()
+                .get(id=family_id)
+            )
+        except RefreshTokenFamily.DoesNotExist as error:
+            raise TokenError(
+                "Refresh token family is not recognized."
+            ) from error
+
+        try:
+            token_record = (
+                HashedRefreshToken.objects
+                .select_for_update()
+                .get(
+                    family=family,
+                    jti=token_jti,
+                    token_hash=token_hash,
+                )
+            )
+        except HashedRefreshToken.DoesNotExist as error:
+            raise TokenError(
+                "Refresh token is not recognized."
+            ) from error
+
+        token_user_id = decoded_token.get(
+            api_settings.USER_ID_CLAIM
+        )
+
+        ownership_matches = (
+            str(token_user_id) == str(family.user_id)
+            and str(authenticated_user.pk)
+            == str(family.user_id)
+        )
+
+        if not ownership_matches:
+            raise RefreshTokenOwnershipError(
+                "The refresh token does not belong "
+                "to the authenticated user."
+            )
+
+        revoked_at = family.revoked_at or timezone.now()
+
+        if family.revoked_at is None:
+            family.revoked_at = revoked_at
+            family.save(
+                update_fields=["revoked_at"]
+            )
+
+        family.tokens.filter(
+            revoked_at__isnull=True
+        ).update(
+            revoked_at=revoked_at
+        )

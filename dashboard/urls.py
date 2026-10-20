@@ -2,6 +2,7 @@ from django.urls import path
 
 from . import views
 from .api_views import (
+    AdminTransactionExportAPIView,
     TransactionDetailAPIView,
     TransactionListAPIView,
 )
@@ -25,8 +26,13 @@ urlpatterns = [
         name="transaction_api_detail",
     ),
     path(
-    "api/transactions/",
-    TransactionListAPIView.as_view(),
-    name="transaction_api_list",
+        "api/transactions/",
+        TransactionListAPIView.as_view(),
+        name="transaction_api_list",
+    ),
+    path(
+        "api/transactions/export/",
+        AdminTransactionExportAPIView.as_view(),
+        name="transaction_api_export",
     ),
 ]

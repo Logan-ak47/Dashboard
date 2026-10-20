@@ -51,6 +51,11 @@ from rest_framework_simplejwt.token_blacklist.models import (
 
 from rest_framework_simplejwt.exceptions import TokenError
 
+from .token_service import (
+    RefreshTokenOwnershipError,
+    revoke_refresh_token_family,
+)
+
 
 
 
@@ -514,6 +519,7 @@ class BootstrapUsersCommandTests(TestCase):
 class JWTAuthenticationTests(APITestCase):
     def setUp(self):
         self.password = "test-viewer-password"
+        self.other_password = "other-password"
         self.user = get_user_model().objects.create_user(
             username="jwt-viewer",
             password=self.password,
@@ -521,7 +527,7 @@ class JWTAuthenticationTests(APITestCase):
         self.other_user = (
             get_user_model().objects.create_user(
             username="other-jwt-user",
-            password="other-password",
+            password=self.other_password,
             )
         )
 
@@ -536,23 +542,27 @@ class JWTAuthenticationTests(APITestCase):
         )
 
     def test_user_cannot_logout_another_users_token(self):
-        own_access_token = RefreshToken.for_user(
-            self.user
-        ).access_token
-        other_refresh_token = RefreshToken.for_user(
-            self.other_user
+        own_pair_response = self.obtain_token_pair()
+        other_pair_response = self.client.post(
+            reverse("token_obtain_pair"),
+            {
+                "username": self.other_user.username,
+                "password": self.other_password,
+            },
+            format="json",
         )
         self.client.credentials(
             HTTP_AUTHORIZATION=(
-                f"Bearer {own_access_token}"
+                "Bearer "
+                f"{own_pair_response.data['access']}"
             ),
         )
         logout_response = self.client.post(
             reverse("token_logout"),
             {
-                "refresh": str(
-                    other_refresh_token
-                )
+                "refresh": (
+                    other_pair_response.data["refresh"]
+                ),
             },
             format="json",
         )
@@ -563,9 +573,9 @@ class JWTAuthenticationTests(APITestCase):
         refresh_response = self.client.post(
             reverse("token_refresh"),
             {
-                "refresh": str(
-                    other_refresh_token
-                )
+                "refresh": (
+                    other_pair_response.data["refresh"]
+                ),
             },
             format="json",
         )
@@ -657,7 +667,7 @@ class JWTAuthenticationTests(APITestCase):
             status.HTTP_401_UNAUTHORIZED,
         )
 
-    def test_logout_blacklists_refresh_token(self):
+    def test_logout_revokes_refresh_token_family(self):
         pair_response = self.obtain_token_pair()
         access_token = pair_response.data["access"]
         refresh_token = pair_response.data["refresh"]
@@ -705,40 +715,33 @@ class JWTAuthenticationTests(APITestCase):
             response.status_code,
             status.HTTP_400_BAD_REQUEST,
         )
-        self.assertEqual(
-            response.data["detail"],
-            "Refresh token is required.",
-        )
+        self.assertIn("refresh", response.data)
 
-    def test_session_logout_request_requires_csrf(self):
+    def test_session_cannot_authenticate_jwt_logout(self):
         csrf_client = APIClient(
             enforce_csrf_checks=True
         )
         csrf_client.force_login(self.user)
 
-        refresh_token = RefreshToken.for_user(
-            self.user
-        )
-
         response = csrf_client.post(
             reverse("token_logout"),
-            {"refresh": str(refresh_token)},
+            {"refresh": "unused-session-refresh"},
             format="json",
         )
 
         self.assertEqual(
             response.status_code,
-            status.HTTP_403_FORBIDDEN,
+            status.HTTP_401_UNAUTHORIZED,
         )
+
     def test_jwt_logout_does_not_require_csrf(self):
         csrf_client = APIClient(
             enforce_csrf_checks=True
         )
 
-        refresh_token = RefreshToken.for_user(
-            self.user
-        )
-        access_token = refresh_token.access_token
+        pair_response = self.obtain_token_pair()
+        access_token = pair_response.data["access"]
+        refresh_token = pair_response.data["refresh"]
 
         csrf_client.credentials(
             HTTP_AUTHORIZATION=(
@@ -748,7 +751,7 @@ class JWTAuthenticationTests(APITestCase):
 
         response = csrf_client.post(
             reverse("token_logout"),
-            {"refresh": str(refresh_token)},
+            {"refresh": refresh_token},
             format="json",
         )
 
@@ -756,6 +759,275 @@ class JWTAuthenticationTests(APITestCase):
             response.status_code,
             status.HTTP_204_NO_CONTENT,
         )
+
+    def test_obtain_endpoint_stores_only_refresh_hash(self):
+        pair_response = self.obtain_token_pair()
+
+        self.assertEqual(
+            pair_response.status_code,
+            status.HTTP_200_OK,
+        )
+
+        family = RefreshTokenFamily.objects.get(
+            user=self.user
+        )
+        token_record = family.tokens.get()
+        raw_refresh_token = pair_response.data["refresh"]
+
+        self.assertEqual(
+            token_record.token_hash,
+            hash_refresh_token(raw_refresh_token),
+        )
+        self.assertNotEqual(
+            token_record.token_hash,
+            raw_refresh_token,
+        )
+        self.assertEqual(
+            OutstandingToken.objects.count(),
+            0,
+        )
+
+    def test_refresh_endpoint_rotates_refresh_token(self):
+        pair_response = self.obtain_token_pair()
+        original_refresh = pair_response.data["refresh"]
+
+        family = RefreshTokenFamily.objects.get(
+            user=self.user
+        )
+        original_record = family.tokens.get()
+
+        refresh_response = self.client.post(
+            reverse("token_refresh"),
+            {"refresh": original_refresh},
+            format="json",
+        )
+
+        self.assertEqual(
+            refresh_response.status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertIn("access", refresh_response.data)
+        self.assertIn("refresh", refresh_response.data)
+        self.assertNotEqual(
+            refresh_response.data["refresh"],
+            original_refresh,
+        )
+
+        original_record.refresh_from_db()
+        replacement = original_record.replaced_by
+
+        self.assertIsNotNone(original_record.used_at)
+        self.assertIsNotNone(replacement)
+        self.assertEqual(
+            replacement.token_hash,
+            hash_refresh_token(
+                refresh_response.data["refresh"]
+            ),
+        )
+        self.assertEqual(family.tokens.count(), 2)
+        self.assertEqual(
+            OutstandingToken.objects.count(),
+            0,
+        )
+
+    def test_reusing_old_refresh_revokes_family(self):
+        pair_response = self.obtain_token_pair()
+        original_refresh = pair_response.data["refresh"]
+
+        refresh_response = self.client.post(
+            reverse("token_refresh"),
+            {"refresh": original_refresh},
+            format="json",
+        )
+        replacement_refresh = refresh_response.data["refresh"]
+
+        reuse_response = self.client.post(
+            reverse("token_refresh"),
+            {"refresh": original_refresh},
+            format="json",
+        )
+
+        self.assertEqual(
+            reuse_response.status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+        family = RefreshTokenFamily.objects.get(
+            user=self.user
+        )
+        family.refresh_from_db()
+
+        self.assertIsNotNone(family.revoked_at)
+        self.assertIsNotNone(
+            family.reuse_detected_at
+        )
+        self.assertFalse(
+            family.tokens.filter(
+                revoked_at__isnull=True
+            ).exists()
+        )
+
+        replacement_response = self.client.post(
+            reverse("token_refresh"),
+            {"refresh": replacement_refresh},
+            format="json",
+        )
+
+        self.assertEqual(
+            replacement_response.status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+        self.assertEqual(
+            OutstandingToken.objects.count(),
+            0,
+        )
+
+
+class StepUpAuthenticationTests(APITestCase):
+    def setUp(self):
+        self.admin_password = "admin-step-up-password"
+        self.viewer_password = "viewer-step-up-password"
+
+        self.admin = get_user_model().objects.create_superuser(
+            username="step-up-admin",
+            password=self.admin_password,
+            email="admin@example.com",
+        )
+        self.viewer = get_user_model().objects.create_user(
+            username="step-up-viewer",
+            password=self.viewer_password,
+        )
+
+        Transaction.objects.create(
+            user=self.viewer,
+            amount=Decimal("125.50000000"),
+            currency=Transaction.Currency.USD,
+            status=Transaction.Status.COMPLETED,
+        )
+
+    def authenticate_with_jwt(self, user, password):
+        pair_response = self.client.post(
+            reverse("token_obtain_pair"),
+            {
+                "username": user.username,
+                "password": password,
+            },
+            format="json",
+        )
+        self.assertEqual(
+            pair_response.status_code,
+            status.HTTP_200_OK,
+        )
+        self.client.credentials(
+            HTTP_AUTHORIZATION=(
+                f"Bearer {pair_response.data['access']}"
+            )
+        )
+
+    def test_export_requires_jwt_authentication(self):
+        response = self.client.post(
+            reverse("dashboard:transaction_api_export"),
+            {"password": self.admin_password},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_session_cannot_authenticate_export_api(self):
+        self.client.force_login(self.admin)
+
+        response = self.client.post(
+            reverse("dashboard:transaction_api_export"),
+            {"password": self.admin_password},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_401_UNAUTHORIZED,
+        )
+
+    def test_viewer_cannot_export_with_correct_password(self):
+        self.authenticate_with_jwt(
+            self.viewer,
+            self.viewer_password,
+        )
+
+        response = self.client.post(
+            reverse("dashboard:transaction_api_export"),
+            {"password": self.viewer_password},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_admin_access_token_alone_is_not_enough(self):
+        self.authenticate_with_jwt(
+            self.admin,
+            self.admin_password,
+        )
+
+        response = self.client.post(
+            reverse("dashboard:transaction_api_export"),
+            {},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_400_BAD_REQUEST,
+        )
+        self.assertIn("password", response.data)
+
+    def test_admin_with_wrong_password_is_rejected(self):
+        self.authenticate_with_jwt(
+            self.admin,
+            self.admin_password,
+        )
+
+        response = self.client.post(
+            reverse("dashboard:transaction_api_export"),
+            {"password": "wrong-password"},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    def test_admin_with_step_up_password_can_export(self):
+        self.authenticate_with_jwt(
+            self.admin,
+            self.admin_password,
+        )
+
+        response = self.client.post(
+            reverse("dashboard:transaction_api_export"),
+            {"password": self.admin_password},
+            format="json",
+        )
+
+        self.assertEqual(
+            response.status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(response.data["total_transactions"], 1)
+        self.assertEqual(response.data["exported_transactions"], 1)
+        self.assertFalse(response.data["truncated"])
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertNotContains(
+            response,
+            self.admin_password,
+        )
+
+
 class TransactionDetailAPITests(APITestCase):
     @classmethod
     def setUpTestData(cls):
@@ -1327,3 +1599,90 @@ class RefreshTokenRotationServiceTests(TestCase):
             rotate_refresh_token(
                 "not-a-signed-refresh-token"
             )
+
+
+class RefreshTokenLogoutServiceTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="logout-service-user",
+            password="test-password-2026",
+        )
+        self.other_user = get_user_model().objects.create_user(
+            username="other-logout-user",
+            password="test-password-2026",
+        )
+
+    def test_logout_revokes_entire_token_family(self):
+        first_pair = issue_token_pair(self.user)
+        second_pair = rotate_refresh_token(
+            first_pair["refresh"]
+        )
+
+        family = RefreshTokenFamily.objects.get(
+            user=self.user
+        )
+
+        revoke_refresh_token_family(
+            second_pair["refresh"],
+            self.user,
+        )
+
+        family.refresh_from_db()
+
+        self.assertIsNotNone(family.revoked_at)
+        self.assertFalse(
+            family.tokens.filter(
+                revoked_at__isnull=True
+            ).exists()
+        )
+
+        with self.assertRaises(TokenError):
+            rotate_refresh_token(
+                second_pair["refresh"]
+            )
+
+    def test_user_cannot_revoke_another_users_family(self):
+        token_pair = issue_token_pair(self.user)
+        family = RefreshTokenFamily.objects.get(
+            user=self.user
+        )
+
+        with self.assertRaises(
+            RefreshTokenOwnershipError
+        ):
+            revoke_refresh_token_family(
+                token_pair["refresh"],
+                self.other_user,
+            )
+
+        family.refresh_from_db()
+
+        self.assertIsNone(family.revoked_at)
+        self.assertTrue(
+            family.tokens.filter(
+                revoked_at__isnull=True
+            ).exists()
+        )
+
+    def test_logout_is_idempotent(self):
+        token_pair = issue_token_pair(self.user)
+
+        revoke_refresh_token_family(
+            token_pair["refresh"],
+            self.user,
+        )
+        revoke_refresh_token_family(
+            token_pair["refresh"],
+            self.user,
+        )
+
+        family = RefreshTokenFamily.objects.get(
+            user=self.user
+        )
+
+        self.assertIsNotNone(family.revoked_at)
+        self.assertFalse(
+            family.tokens.filter(
+                revoked_at__isnull=True
+            ).exists()
+        )
